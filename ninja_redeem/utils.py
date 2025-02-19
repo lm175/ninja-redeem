@@ -1,42 +1,76 @@
-import asyncio, requests
+from datetime import datetime, timezone
+import secrets, struct
 
-from .entity import RedeemCode
+import requests
+
+class WordArray:
+    def __init__(self, words, sig_bytes):
+        self.words = words  # 整形数组
+        self.sig_bytes = sig_bytes  # 有效字节数
+        self._map = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="  # 映射表
+
+    def clamp(self):
+        """确保超出有效字节范围的部分被正确截断"""
+        n = self.sig_bytes
+        if n % 4:
+            self.words[n // 4] &= 0xFFFFFFFF << (32 - n % 4 * 8)
+        self.words = self.words[:-(n // 4 + 1):-1][::-1] + self.words[(n + 3) // 4:]
+
+    def to_string(self):
+        """将整形数组转换为Base64字符串"""
+        self.clamp()
+        t = self.words
+        n = self.sig_bytes
+        r = self._map
+        o = []
+
+        for i in range(0, n, 3):
+            # 提取三个字节并合并成一个24位整数
+            a = ((t[i >> 2] >> (24 - i % 4 * 8)) & 0xFF) << 16
+            if i + 1 < len(t) * 4:
+                a |= ((t[(i + 1) >> 2] >> (24 - (i + 1) % 4 * 8)) & 0xFF) << 8
+            if i + 2 < len(t) * 4:
+                a |= (t[(i + 2) >> 2] >> (24 - (i + 2) % 4 * 8)) & 0xFF
+
+            # 将24位整数转换为四个6位段，并根据_map查找对应的字符
+            for c in range(4):
+                if i + 0.75 * c < n:
+                    o.append(r[a >> (6 * (3 - c)) & 0x3F])
+
+        # 添加填充字符
+        u = r[64]
+        while len(o) % 4:
+            o.append(u)
+
+        return ''.join(o)
 
 
-async def process_chunk(dhm: str, chunk: list[str]):
-    redeem = RedeemCode(dhm)
-    
-    try:
-        for uid in chunk:
-            # 使用 to_thread 将阻塞调用转为异步
-            tip_msg = await asyncio.to_thread(redeem.redeem_for_user, uid)
-            print(tip_msg)
-    finally:
-        redeem.close()
 
 
-async def redeem_for_users(dhm: str, uids: list[str], coroutine_nums: int):
-    """
-    批量兑换函数
-
-    参数:
-    - dhm: 兑换码
-    - uids: 执行兑换的uid的字符串列表
-    - coroutine_nums: 创建的异步协程数量
-    """
-    num_coroutines = min(coroutine_nums, len(uids))
-    chunk_size = (len(uids) + num_coroutines - 1) // num_coroutines
-    chunks = [uids[i:i + chunk_size] for i in range(0, len(uids), chunk_size)]
-
-    tasks = [asyncio.create_task(process_chunk(dhm, chunk)) for chunk in chunks]
-    await asyncio.gather(*tasks)
+def random_word_array(length_in_bytes) -> WordArray:
+    if length_in_bytes % 4 != 0:
+        raise ValueError('Length must be a multiple of 4.')
+    random_bytes = secrets.token_bytes(length_in_bytes)
+    words = list(struct.unpack(f"{length_in_bytes // 4}I", random_bytes))
+    return WordArray(words, length_in_bytes)
 
 
+def generate_x_yh_nonce_traceid() -> str:
+    return random_word_array(16).to_string()
 
-def serch_uid(uid: int) -> str | None:
+
+def generate_x_yh_date() -> str:
+    current_time = datetime.now(timezone.utc)
+    return current_time.strftime('%Y%m%dT%H%M%S') + 'Z'
+
+
+def query_uid(uid: int) -> str | None:
     res = requests.get(f"https://statistics.pandadastudio.com/player/simpleInfo?uid={uid}")
-    data: dict = res.json().get('data')
+    data: dict = res.json().get('data', {})
     if not data:
         return None
     
-    return f"uid: {data.get('uid')}\n{data.get('name')} - {data.get('serverId') + 1}服 - {data.get('title')}"
+    return (
+        f"uid: {data.get('uid', 0)}\n"
+        f"{data.get('name', '')} - {data.get('serverId', 0) + 1}服 - {data.get('title', '')}"
+    )

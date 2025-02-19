@@ -1,3 +1,4 @@
-from .entity import RedeemCode as RedeemCode
-from .utils import redeem_for_users as redeem_for_users
-from .utils import serch_uid as serch_uid
+from .main import CaptchasHelper, redeem_code
+from .utils import query_uid
+
+__all__ = ["CaptchasHelper", "redeem_code", "query_uid"]
